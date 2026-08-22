@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-NS3_ROOT="${NS3_ROOT:-$HOME/Desktop/project-setup/ns-allinone-3.45/ns-3.45}"
+NS3_ROOT="${NS3_ROOT:-$HOME/ns-3-45}"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 
 if [ ! -d "$NS3_ROOT/scratch" ]; then
@@ -15,3 +15,11 @@ fi
 
 ln -sfn "$REPO_ROOT/sim/ns3" "$NS3_ROOT/scratch/shield"
 echo "Linked $REPO_ROOT/sim/ns3 -> $NS3_ROOT/scratch/shield"
+
+if [ ! -f "$REPO_ROOT/sim/tcp_bridge/tcp_bridge_server.cc" ]; then
+  echo "ERROR: $REPO_ROOT/sim/tcp_bridge/tcp_bridge_server.cc not found." >&2
+  exit 1
+fi
+
+ln -sfn "$REPO_ROOT/sim/tcp_bridge/tcp_bridge_server.cc" "$NS3_ROOT/scratch/tcp_bridge_server.cc"
+echo "Linked $REPO_ROOT/sim/tcp_bridge/tcp_bridge_server.cc -> $NS3_ROOT/scratch/tcp_bridge_server.cc"
