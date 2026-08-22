@@ -20,7 +20,7 @@ public:
         return tid;
     }
 
-    UdpFloodApp() : m_intensity(0.5), m_packetSize(64) {}
+    UdpFloodApp() : m_intensity(0.5), m_packetSize(1500) {}
 
     void SetRemote(uint32_t nodeId, const Address &remoteAddress)
     {

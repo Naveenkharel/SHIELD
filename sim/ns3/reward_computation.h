@@ -25,19 +25,17 @@ enum class Action {
 
 struct RouterRewardState
 {
-    // Arrival counters (pre‑enforcement) – updated via IPv4 Rx trace
-    uint32_t arrivedLegit   = 0;
-    uint32_t arrivedAttack  = 0;
-
-    // Drop counters – updated via queue disc "Drop" trace
-    uint32_t legitDropped   = 0;
-    uint32_t attackDropped  = 0;
+    // Counters for the CURRENT 100 ms window
+    uint32_t arrivedLegit  = 0;   // pre‑enforcement legitimate arrivals
+    uint32_t arrivedAttack = 0;   // pre‑enforcement attack arrivals
+    uint32_t legitDropped  = 0;   // legitimate drops (enforcement or overflow)
+    uint32_t attackDropped = 0;   // attack drops (enforcement or overflow)
 };
 
 static std::vector<RouterRewardState> g_rewardState;
 
 // ===================================================================
-// Drop callback – unchanged
+// Drop callback – fires when a packet is dropped by the queue disc
 // ===================================================================
 static void DropCallback(uint32_t nodeId, Ptr<const QueueDiscItem> item)
 {
@@ -48,7 +46,8 @@ static void DropCallback(uint32_t nodeId, Ptr<const QueueDiscItem> item)
 }
 
 // ===================================================================
-// IPv4 arrival callback – reads AttackTag for pre‑enforcement counts
+// IPv4 arrival callback – reads AttackTag for pre‑enforcement counts.
+// This is the ONLY place besides reward_utils that reads the tag.
 // ===================================================================
 static void Ipv4ArrivalCallback(Ptr<const Packet> packet, Ptr<Ipv4> ipv4, uint32_t interface)
 {
@@ -88,7 +87,7 @@ inline void InitializeRewardState(const Topology& topo)
         }
     }
 
-    // Connect IPv4 arrival trace on every node (same as telemetry, but separate)
+    // Connect a separate IPv4 arrival trace on every node
     for (uint32_t i = 0; i < nNodes; ++i)
     {
         Ptr<Ipv4> ipv4 = topo.nodes.Get(i)->GetObject<Ipv4>();
@@ -97,11 +96,14 @@ inline void InitializeRewardState(const Topology& topo)
 }
 
 // ===================================================================
-// Reward computation
+// Reward weights (tune as needed)
 // ===================================================================
 constexpr double W_THROUGHPUT = 1.0;
 constexpr double W_FP_PENALTY = 3.0;
 
+// ===================================================================
+// ComputeReward – returns a scalar team reward for the current window
+// ===================================================================
 inline double ComputeReward(const Topology& topo,
                             const std::vector<Action>& actions)
 {
@@ -117,19 +119,31 @@ inline double ComputeReward(const Topology& topo,
     {
         const RouterRewardState& s = g_rewardState[i];
 
-        // Component A: legitimate throughput ratio using arrival‑minus‑drops
-        uint32_t legitArrived = s.arrivedLegit;
-        uint32_t legitDropped = s.legitDropped;
-        if (legitArrived > 0)
+        // -----------------------------------------------------------------
+        // Component A: legitimate throughput ratio
+        // arrivedLegit = total legitimate packets that arrived this window
+        // droppedLegit = legitimate packets that were dropped
+        // If no legitimate traffic arrived at this router, skip it entirely
+        // (no information about throughput quality).
+        // -----------------------------------------------------------------
+        uint32_t arrivedLegit = s.arrivedLegit;
+        if (arrivedLegit > 0)
         {
-            // Estimated successful legitimate packets = arrived - dropped (capped at 0)
-            uint32_t legitSuccess = (legitArrived >= legitDropped) ? (legitArrived - legitDropped) : 0;
-            double legitRatio = static_cast<double>(legitSuccess) / legitArrived;
+            uint32_t droppedLegit = s.legitDropped;
+            uint32_t legitSuccess = (arrivedLegit >= droppedLegit)
+                                        ? (arrivedLegit - droppedLegit)
+                                        : 0;
+            double legitRatio = static_cast<double>(legitSuccess) / arrivedLegit;
             throughputReward += legitRatio;
             loadedRouters++;
         }
 
-        // Component B: false‑positive penalty (pre‑enforcement arrival mix)
+        // -----------------------------------------------------------------
+        // Component B: false‑positive penalty
+        // Only for routers that took an aggressive action this cycle.
+        // Penalty = legitimate fraction of arriving traffic (pre‑enforcement).
+        // If nothing arrived, penalty = 0.0 (no traffic to be false‑positive about).
+        // -----------------------------------------------------------------
         if (actions[i] != Action::NONE)
         {
             uint32_t totalArrived = s.arrivedLegit + s.arrivedAttack;
@@ -140,23 +154,36 @@ inline double ComputeReward(const Topology& topo,
             }
             else
             {
-                fpPenaltyTotal += 0.0;   // no traffic arrived, no false positive
+                fpPenaltyTotal += 0.0;   // documented default: no traffic → no penalty
             }
             aggressiveRouters++;
         }
     }
 
-    double avgThroughput = (loadedRouters > 0) ? (throughputReward / loadedRouters) : 0.0;
-    double avgFpPenalty  = (aggressiveRouters > 0) ? (fpPenaltyTotal / aggressiveRouters) : 0.0;
+    // Average Component A over routers that saw legitimate traffic.
+    // If none did, default to 1.0 (neutral – nothing was lost because
+    // there was nothing to lose).
+    double avgThroughput = (loadedRouters > 0)
+                               ? (throughputReward / loadedRouters)
+                               : 1.0;
+
+    // Average Component B over routers that took an aggressive action.
+    // If none did, penalty is 0.0.
+    double avgFpPenalty = (aggressiveRouters > 0)
+                              ? (fpPenaltyTotal / aggressiveRouters)
+                              : 0.0;
 
     double reward = W_THROUGHPUT * avgThroughput - W_FP_PENALTY * avgFpPenalty;
 
-    // Reset all window counters
+    // Reset all window counters for the next cycle
     for (uint32_t i = 0; i < nNodes; ++i)
+    {
         g_rewardState[i] = RouterRewardState();
+    }
 
     return reward;
 }
 
 } // namespace ns3
+
 #endif
