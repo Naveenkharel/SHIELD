@@ -14,32 +14,50 @@ namespace ns3 {
 enum class AttackFlavor { UDP_FLOOD, TCP_SYN_FLOOD, ICMP_FLOOD };
 
 /**
- * Launch a DDoS attack flow.
- * The intensity is a fraction of the last‑hop link’s capacity into the target.
- * Works for both adjacent and non‑adjacent attacker/target pairs.
+ * Launch a DDoS attack flow from an external host attached at entryRouterId
+ * toward targetRouterId.  The attack intensity is based on the last‑hop
+ * link entering the target.  When entry == target, the access link is used.
  */
 inline ApplicationContainer LaunchAttack(
     const Topology& topo,
-    uint32_t targetNodeId,
+    uint32_t entryRouterId,
+    uint32_t targetRouterId,
     AttackFlavor flavor,
     double intensity,
     Time startTime,
-    Time duration,
-    uint32_t sourceNodeId = 0)
+    Time duration)
 {
     NS_ASSERT(intensity > 0 && intensity <= 1.0);
 
-    // Use the last‑hop link into the target (works for any pair)
-    auto [lastHopNode, linkRate] = GetLastHopInfo(topo, sourceNodeId, targetNodeId);
+    uint32_t lastHopNode;
+    DataRate linkRate;
 
-    // Print the resolved last‑hop link and its DataRate for verification
-    std::cout << "[LaunchAttack] Attacker " << sourceNodeId
-              << " -> Target " << targetNodeId
-              << " : last‑hop link " << lastHopNode << " -> " << targetNodeId
+    // When the external host is directly attached to the target, the
+    // bottleneck is the access link itself (1 Gbps).  Otherwise, use the
+    // last backbone hop before the target.
+    if (entryRouterId == targetRouterId)
+    {
+        lastHopNode = entryRouterId;
+        linkRate = DataRate("1Gbps");       // access link rate
+    }
+    else
+    {
+        auto [last, rate] = GetLastHopInfo(topo, entryRouterId, targetRouterId);
+        lastHopNode = last;
+        linkRate = rate;
+    }
+
+    // Print the resolved last‑hop link and its DataRate
+    std::cout << "[LaunchAttack] Entry " << entryRouterId
+              << " -> Target " << targetRouterId
+              << " : last‑hop link " << lastHopNode << " -> " << targetRouterId
               << ", DataRate = " << linkRate << std::endl;
 
-    Ptr<Node> srcNode = topo.nodes.Get(sourceNodeId);
-    Ptr<Node> dstNode = topo.nodes.Get(targetNodeId);
+    // Create the external attacker host
+    Ptr<Node> hostNode = CreateExternalAttackerHost(topo, entryRouterId);
+
+    // Destination address of the target router
+    Ptr<Node> dstNode = topo.nodes.Get(targetRouterId);
     Ipv4Address dstAddr = dstNode->GetObject<Ipv4>()->GetAddress(1, 0).GetLocal();
     Address remote(InetSocketAddress(dstAddr, 9));
 
@@ -47,9 +65,9 @@ inline ApplicationContainer LaunchAttack(
     if (flavor == AttackFlavor::UDP_FLOOD)
     {
         Ptr<UdpFloodApp> udpApp = CreateObject<UdpFloodApp>();
-        udpApp->SetRemote(targetNodeId, remote);
+        udpApp->SetRemote(targetRouterId, remote);
         udpApp->SetIntensity(intensity, linkRate);
-        srcNode->AddApplication(udpApp);
+        hostNode->AddApplication(udpApp);
         udpApp->SetStartTime(startTime);
         udpApp->SetStopTime(startTime + duration);
         app.Add(udpApp);
@@ -57,9 +75,9 @@ inline ApplicationContainer LaunchAttack(
     else if (flavor == AttackFlavor::TCP_SYN_FLOOD)
     {
         Ptr<TcpSynFloodApp> synApp = CreateObject<TcpSynFloodApp>();
-        synApp->SetRemote(targetNodeId, remote);
+        synApp->SetRemote(targetRouterId, remote);
         synApp->SetIntensity(intensity, linkRate);
-        srcNode->AddApplication(synApp);
+        hostNode->AddApplication(synApp);
         synApp->SetStartTime(startTime);
         synApp->SetStopTime(startTime + duration);
         app.Add(synApp);
@@ -67,9 +85,9 @@ inline ApplicationContainer LaunchAttack(
     else if (flavor == AttackFlavor::ICMP_FLOOD)
     {
         Ptr<IcmpFloodApp> icmpApp = CreateObject<IcmpFloodApp>();
-        icmpApp->SetRemote(targetNodeId, remote);
+        icmpApp->SetRemote(targetRouterId, remote);
         icmpApp->SetIntensity(intensity, linkRate);
-        srcNode->AddApplication(icmpApp);
+        hostNode->AddApplication(icmpApp);
         icmpApp->SetStartTime(startTime);
         icmpApp->SetStopTime(startTime + duration);
         app.Add(icmpApp);

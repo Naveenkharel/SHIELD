@@ -32,23 +32,80 @@ public:
         m_topo = BuildNsfnetTopology();
 
         // ORDERING MATTERS: telemetry installs the final queue discs,
-        // then reward hooks are attached to those discs.  Do NOT swap.
+        // then reward hooks are attached to those discs.
         InitializeTelemetry(m_topo);
         InitializeRewardState(m_topo);
 
+        // Reproducible background traffic
         Ptr<UniformRandomVariable> uv = CreateObject<UniformRandomVariable>();
         uv->SetAttribute("Min", DoubleValue(0));
         uv->SetAttribute("Max", DoubleValue(m_topo.nodes.GetN() - 1));
         SeedBackgroundTraffic(m_topo, 8, 50.0, uv);
 
-        LaunchAttack(m_topo,
-                     11,
-                     AttackFlavor::TCP_SYN_FLOOD,
-                     0.5,
-                     Seconds(5.0),
-                     Seconds(20.0),
-                     1);
+        // --- Fully randomised attack scenario ---
+        Ptr<UniformRandomVariable> entryRng = CreateObject<UniformRandomVariable>();
+        entryRng->SetAttribute("Min", DoubleValue(0));
+        entryRng->SetAttribute("Max", DoubleValue(m_topo.nodes.GetN() - 1));
+        uint32_t entryRouter = static_cast<uint32_t>(entryRng->GetValue());
 
+        Ptr<UniformRandomVariable> targetRng = CreateObject<UniformRandomVariable>();
+        targetRng->SetAttribute("Min", DoubleValue(0));
+        targetRng->SetAttribute("Max", DoubleValue(m_topo.nodes.GetN() - 1));
+        uint32_t targetRouter = static_cast<uint32_t>(targetRng->GetValue());
+
+        // Attack type: 0=UDP, 1=TCP SYN, 2=ICMP
+        Ptr<UniformRandomVariable> typeRng = CreateObject<UniformRandomVariable>();
+        typeRng->SetAttribute("Min", DoubleValue(0));
+        typeRng->SetAttribute("Max", DoubleValue(2));
+        int typeVal = static_cast<int>(typeRng->GetValue());
+        AttackFlavor flavor;
+        switch (typeVal) {
+            case 0: flavor = AttackFlavor::UDP_FLOOD;       break;
+            case 1: flavor = AttackFlavor::TCP_SYN_FLOOD;   break;
+            case 2: flavor = AttackFlavor::ICMP_FLOOD;      break;
+            default: flavor = AttackFlavor::TCP_SYN_FLOOD;   break;
+        }
+
+        // Intensity: uniform 10‑100% (0.1‑1.0)
+        Ptr<UniformRandomVariable> intRng = CreateObject<UniformRandomVariable>();
+        intRng->SetAttribute("Min", DoubleValue(0.1));
+        intRng->SetAttribute("Max", DoubleValue(1.0));
+        double intensity = intRng->GetValue();
+
+        // Start time: uniform 3‑7 seconds
+        Ptr<UniformRandomVariable> startRng = CreateObject<UniformRandomVariable>();
+        startRng->SetAttribute("Min", DoubleValue(3.0));
+        startRng->SetAttribute("Max", DoubleValue(7.0));
+        double startTime = startRng->GetValue();
+
+        // --- Guarantee a recovery window after the attack ---
+        constexpr double EPISODE_SIM_SECONDS      = 20.0;   // 200 steps * 100 ms
+        constexpr double RECOVERY_BUFFER_SECONDS  = 3.0;    // minimum time after attack ends
+        constexpr double MIN_DURATION_SECONDS     = 5.0;    // shortest attack worth simulating
+
+        double maxDuration = EPISODE_SIM_SECONDS - RECOVERY_BUFFER_SECONDS - startTime;
+        // Since startTime is in [3,7], maxDuration ∈ [10,14].
+        // MIN_DURATION_SECONDS is always ≤ maxDuration, so no clamping needed.
+
+        Ptr<UniformRandomVariable> durRng = CreateObject<UniformRandomVariable>();
+        durRng->SetAttribute("Min", DoubleValue(MIN_DURATION_SECONDS));
+        durRng->SetAttribute("Max", DoubleValue(maxDuration));
+        double duration = durRng->GetValue();
+
+        double recoveryWindow = EPISODE_SIM_SECONDS - startTime - duration;
+        // recoveryWindow is guaranteed ≥ RECOVERY_BUFFER_SECONDS.
+
+        std::cout << "[Scenario] entry=" << entryRouter
+                  << " target=" << targetRouter
+                  << " type=" << typeVal
+                  << " intensity=" << intensity
+                  << " start=" << startTime << "s dur=" << duration << "s"
+                  << " recovery=" << recoveryWindow << "s" << std::endl;
+
+        LaunchAttack(m_topo, entryRouter, targetRouter, flavor,
+                     intensity, Seconds(startTime), Seconds(duration));
+
+        // Recompute global routes now that external host exists
         Ipv4GlobalRoutingHelper::PopulateRoutingTables();
 
         m_stepCount = 0;

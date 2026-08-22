@@ -21,7 +21,7 @@ public:
         return tid;
     }
 
-    IcmpFloodApp() : m_intensity(0.5), m_packetSize(32) {} // 8 ICMP header + 24 data
+    IcmpFloodApp() : m_intensity(0.5), m_packetSize(1500) {}
 
     void SetRemote(uint32_t nodeId, const Address &remoteAddress)
     {

@@ -6,6 +6,7 @@
 #include "ns3/internet-module.h"
 #include "ns3/point-to-point-module.h"
 #include "ns3/traffic-control-module.h"
+#include "ns3/ipv4-static-routing-helper.h"
 
 #include <array>
 #include <iostream>
@@ -66,7 +67,7 @@ inline void SetQueueDiscOnNode(const NodeNeighborMap& map, uint32_t nodeId,
 }
 
 // ===================================================================
-// Topology builder
+// Topology builder (no longer calls PopulateRoutingTables)
 // ===================================================================
 inline Topology BuildNsfnetTopology()
 {
@@ -122,7 +123,7 @@ inline Topology BuildNsfnetTopology()
         topo.edges.push_back(edge);
     }
 
-    Ipv4GlobalRoutingHelper::PopulateRoutingTables();
+    // Global routing is now called AFTER external hosts are added (in Reset())
     return topo;
 }
 
@@ -151,12 +152,6 @@ inline void PrintTopologySummary(const Topology& topo)
 // ===================================================================
 // BFS shortest‑path (hop count) and last‑hop info
 // ===================================================================
-
-/**
- * BFS shortest‑path (unweighted, hop count) over the neighbour map.
- * Returns the list of node IDs from src to dst (inclusive).
- * If no path exists, returns an empty vector.
- */
 inline std::vector<uint32_t>
 FindShortestPath(const NodeNeighborMap& neighborMap, uint32_t src, uint32_t dst)
 {
@@ -199,17 +194,6 @@ FindShortestPath(const NodeNeighborMap& neighborMap, uint32_t src, uint32_t dst)
     return {};
 }
 
-/**
- * Given a topology and an attacker/target pair, find the DataRate of the
- * last‑hop link (the link that enters the target node).  This link is a
- * reasonable bottleneck reference for attack intensity calculation, because
- * it is the one the flood traffic will actually saturate.
- *
- * Assumption: the BFS path (unweighted) may not match ns‑3's actual IP
- * routing exactly when equal‑cost paths exist, but it identifies a valid
- * link whose capacity serves as a consistent reference for the intensity
- * percentage.
- */
 inline std::pair<uint32_t, DataRate>
 GetLastHopInfo(const Topology& topo, uint32_t src, uint32_t dst)
 {
@@ -234,6 +218,49 @@ GetLastHopInfo(const Topology& topo, uint32_t src, uint32_t dst)
     }
     NS_FATAL_ERROR("Last‑hop link not found between " << prevNode << " and " << dst);
     return {0, DataRate(0)};
+}
+
+// ===================================================================
+// External attacker host creation (NEW)
+// ===================================================================
+/**
+ * Create an external host node connected to the specified entry router.
+ * The host is NOT part of the 14‑defender set; it is a pure traffic source.
+ *
+ * Access link bandwidth/delay:
+ *   Bandwidth = 1 Gbps  – typical for a well‑provisioned access link
+ *   Delay     = 1 ms    – typical LAN / last‑mile value
+ * These are representative numbers, not derived from NSFNET data, and are
+ * intentionally generous so the access link is not the bottleneck.
+ */
+inline Ptr<Node> CreateExternalAttackerHost(const Topology& topo,
+                                            uint32_t entryRouterId)
+{
+    Ptr<Node> hostNode = CreateObject<Node>();
+
+    PointToPointHelper p2p;
+    p2p.SetDeviceAttribute("DataRate", StringValue("1Gbps"));
+    p2p.SetChannelAttribute("Delay", StringValue("1ms"));
+
+    NetDeviceContainer devices = p2p.Install(hostNode, topo.nodes.Get(entryRouterId));
+
+    InternetStackHelper internet;
+    internet.Install(hostNode);
+
+    // Assign a /30 subnet from a range that does not collide with backbone
+    // addresses (backbone uses 10.0.0.0/30 blocks). We use 11.0.0.0/30.
+    Ipv4AddressHelper addr;
+    addr.SetBase("11.0.0.0", "255.255.255.252");
+    Ipv4InterfaceContainer iface = addr.Assign(devices);
+
+    // Add a static default route on the host pointing to the entry router
+    Ipv4Address gatewayAddr = iface.GetAddress(1);   // entry router's side
+    Ptr<Ipv4> hostIpv4 = hostNode->GetObject<Ipv4>();
+    Ipv4StaticRoutingHelper staticRouting;
+    Ptr<Ipv4StaticRouting> hostRouting = staticRouting.GetStaticRouting(hostIpv4);
+    hostRouting->SetDefaultRoute(gatewayAddr, 1);
+
+    return hostNode;
 }
 
 } // namespace ns3
