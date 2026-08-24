@@ -154,7 +154,7 @@ inline double ComputeReward(const Topology& topo,
             }
             else
             {
-                fpPenaltyTotal += 0.0;   // documented default: no traffic → no penalty
+                fpPenaltyTotal += 1.0;   // aggressive + zero arriving traffic = fully unjustified
             }
             aggressiveRouters++;
         }
